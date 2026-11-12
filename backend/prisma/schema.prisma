@@ -1,0 +1,430 @@
+// ============================================================
+// Fidelidad SaaS - Schema Prisma (PostgreSQL)
+// Nota: en Prisma 7 la URL de conexión se mueve a prisma.config.ts
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ------------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------------
+
+enum GlobalRole {
+  SUPER_ADMIN // dueño de la plataforma
+  USER        // cliente final o miembro de un establecimiento
+}
+
+enum MemberRole {
+  OWNER
+  MANAGER
+  STAFF // mozos
+}
+
+enum EstablishmentStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum ValidationMode {
+  STATIC   // QR/NFC fijo (URL con token permanente)
+  ROTATING // QR dinámico que cambia cada ~60s (se muestra en pantalla del staff)
+}
+
+enum CardStatus {
+  ACTIVE    // acumulando sellos
+  COMPLETED // completa, premio disponible para canjear
+  REDEEMED  // premio canjeado
+  EXPIRED   // premio vencido sin canjear
+}
+
+enum StampStatus {
+  VALID
+  VOIDED // anulado por staff/admin
+}
+
+enum StampSource {
+  QR
+  NFC
+  MANUAL // cargado a mano por un manager
+}
+
+enum CustomerSegment {
+  NEW
+  ACTIVE
+  LOYAL
+  AT_RISK
+  LOST
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+// ------------------------------------------------------------
+// USUARIOS Y AUTH
+// ------------------------------------------------------------
+
+model User {
+  id            String     @id @default(uuid()) @db.Uuid
+  email         String     @unique
+  emailVerified DateTime?
+  name          String?
+  phone         String?
+  avatarUrl     String?
+  passwordHash  String? // null si solo usa Google / magic link
+  googleId      String?    @unique
+  globalRole    GlobalRole @default(USER)
+  isActive      Boolean    @default(true)
+  twoFactorEnabled Boolean  @default(false)
+  lastLoginAt   DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  memberships      EstablishmentMember[]
+  cards            LoyaltyCard[]         @relation("CardOwner")
+  redeemedCards    LoyaltyCard[]         @relation("CardRedeemedBy")
+  stamps           Stamp[]               @relation("StampOwner")
+  attributedStamps Stamp[]               @relation("StampStaff")
+  stats            CustomerStats[]
+  refreshTokens    RefreshToken[]
+  sentInvitations  Invitation[]
+  auditLogs        AuditLog[]
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Magic link / código OTP por email (login sin contraseña para clientes)
+model AuthChallenge {
+  id         String    @id @default(uuid()) @db.Uuid
+  email      String
+  purpose    String    @default("LOGIN") // LOGIN | 2FA
+  codeHash   String
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([email, createdAt])
+}
+
+// ------------------------------------------------------------
+// SAAS: PLANES Y SUSCRIPCIONES
+// ------------------------------------------------------------
+
+model Plan {
+  id           String          @id @default(uuid()) @db.Uuid
+  code         String          @unique // "free", "pro", "business"
+  name         String
+  priceCents   Int
+  currency     String          @default("ARS")
+  interval     BillingInterval @default(MONTHLY)
+  maxCustomers Int? // null = ilimitado
+  maxStaff     Int?
+  features     Json            @default("{}")
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id                 String             @id @default(uuid()) @db.Uuid
+  establishmentId    String             @unique @db.Uuid
+  planId             String             @db.Uuid
+  status             SubscriptionStatus @default(TRIALING)
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  externalId         String? // id en Mercado Pago / Stripe
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  establishment Establishment @relation(fields: [establishmentId], references: [id], onDelete: Cascade)
+  plan          Plan          @relation(fields: [planId], references: [id])
+
+  @@index([status, currentPeriodEnd])
+}
+
+// ------------------------------------------------------------
+// ESTABLECIMIENTOS (TENANTS)
+// ------------------------------------------------------------
+
+model Establishment {
+  id              String              @id @default(uuid()) @db.Uuid
+  name            String
+  slug            String              @unique
+  description     String?
+  category        String? // bar, café, restaurante, heladería...
+  logoUrl         String?
+  coverUrl        String?
+  address         String?
+  city            String?
+  province        String?
+  country         String              @default("AR")
+  latitude        Decimal?            @db.Decimal(9, 6)
+  longitude       Decimal?            @db.Decimal(9, 6)
+  geofenceRadiusM Int? // si está seteado, valida cercanía al reclamar
+  timezone        String              @default("America/Argentina/Buenos_Aires")
+  status          EstablishmentStatus @default(PENDING)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  deletedAt       DateTime?
+
+  members      EstablishmentMember[]
+  invitations  Invitation[]
+  templates    CardTemplate[]
+  stampPoints  StampPoint[]
+  cards        LoyaltyCard[]
+  stamps       Stamp[]
+  stats        CustomerStats[]
+  subscription Subscription?
+  auditLogs    AuditLog[]
+
+  @@index([status])
+}
+
+model EstablishmentMember {
+  id              String     @id @default(uuid()) @db.Uuid
+  userId          String     @db.Uuid
+  establishmentId String     @db.Uuid
+  role            MemberRole @default(STAFF)
+  isActive        Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  establishment Establishment @relation(fields: [establishmentId], references: [id], onDelete: Cascade)
+  stampPoints   StampPoint[] // QR/NFC personal del mozo (opcional)
+
+  @@unique([userId, establishmentId])
+  @@index([establishmentId, role])
+}
+
+model Invitation {
+  id              String     @id @default(uuid()) @db.Uuid
+  email           String
+  establishmentId String     @db.Uuid
+  role            MemberRole @default(OWNER)
+  tokenHash       String     @unique
+  invitedById     String     @db.Uuid
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  createdAt       DateTime   @default(now())
+
+  establishment Establishment @relation(fields: [establishmentId], references: [id], onDelete: Cascade)
+  invitedBy     User          @relation(fields: [invitedById], references: [id])
+
+  @@index([email])
+  @@index([establishmentId])
+}
+
+// ------------------------------------------------------------
+// DISEÑO DE TARJETA (personalizable por establecimiento)
+// ------------------------------------------------------------
+
+model CardTemplate {
+  id              String   @id @default(uuid()) @db.Uuid
+  establishmentId String   @db.Uuid
+  name            String
+  version         Int      @default(1)
+  isActive        Boolean  @default(true)
+
+  // Reglas
+  stampsRequired    Int     @default(10)
+  rewardTitle       String // "Café gratis"
+  rewardDescription String?
+  rewardValidDays   Int? // días para canjear una vez completa (null = sin vencimiento)
+
+  // Diseño
+  logoUrl            String?
+  backgroundColor    String  @default("#1F2937")
+  backgroundImageUrl String?
+  textColor          String  @default("#FFFFFF")
+  accentColor        String  @default("#F59E0B")
+  stampIconKey       String? // ícono predefinido: "coffee", "beer", "star"...
+  stampIconUrl       String? // o imagen propia subida
+  emptySlotStyle     String  @default("outline") // outline | dotted | filled
+  layout             Json? // extras de diseño (columnas, radios, etc.)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  establishment Establishment @relation(fields: [establishmentId], references: [id], onDelete: Cascade)
+  cards         LoyaltyCard[]
+
+  @@index([establishmentId, isActive])
+}
+
+// ------------------------------------------------------------
+// PUNTO DE SELLADO: el QR / NFC del local (o del mozo)
+// ------------------------------------------------------------
+
+model StampPoint {
+  id              String         @id @default(uuid()) @db.Uuid
+  establishmentId String         @db.Uuid
+  memberId        String?        @db.Uuid // si es QR personal de un mozo
+  label           String         @default("Principal")
+  token           String         @unique // público, va en la URL
+  validationMode  ValidationMode @default(STATIC)
+  secret          String? // clave HMAC para modo ROTATING
+  isActive        Boolean        @default(true)
+  rotatedAt       DateTime?
+  createdAt       DateTime       @default(now())
+
+  establishment Establishment        @relation(fields: [establishmentId], references: [id], onDelete: Cascade)
+  member        EstablishmentMember? @relation(fields: [memberId], references: [id], onDelete: SetNull)
+  stamps        Stamp[]
+
+  @@index([establishmentId, isActive])
+}
+
+// ------------------------------------------------------------
+// TARJETAS Y SELLOS
+// ------------------------------------------------------------
+
+model LoyaltyCard {
+  id              String     @id @default(uuid()) @db.Uuid
+  userId          String     @db.Uuid
+  establishmentId String     @db.Uuid
+  templateId      String     @db.Uuid
+  cycle           Int        @default(1)
+  stampsRequired  Int // snapshot de la plantilla al crear la tarjeta
+  stampsCount     Int        @default(0)
+  status          CardStatus @default(ACTIVE)
+  redeemCode      String?    @unique // código corto para canje al completarse
+  completedAt     DateTime?
+  expiresAt       DateTime?
+  redeemedAt      DateTime?
+  redeemedById    String?    @db.Uuid // staff que canjeó
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  user          User          @relation("CardOwner", fields: [userId], references: [id])
+  redeemedBy    User?         @relation("CardRedeemedBy", fields: [redeemedById], references: [id])
+  establishment Establishment @relation(fields: [establishmentId], references: [id])
+  template      CardTemplate  @relation(fields: [templateId], references: [id])
+  stamps        Stamp[]
+
+  @@unique([userId, establishmentId, cycle])
+  @@index([establishmentId, status])
+  @@index([userId])
+}
+
+model Stamp {
+  id              String      @id @default(uuid()) @db.Uuid
+  cardId          String      @db.Uuid
+  userId          String      @db.Uuid
+  establishmentId String      @db.Uuid
+  stampPointId    String?     @db.Uuid
+  staffId         String?     @db.Uuid // mozo atribuido (si el QR es personal o carga manual)
+  stampDate       DateTime    @db.Date // día calendario en la zona horaria del local
+  stampedAt       DateTime    @default(now())
+  source          StampSource @default(QR)
+  status          StampStatus @default(VALID)
+  voidedAt        DateTime?
+  voidReason      String?
+
+  // Antifraude (guardar hashes, no datos crudos)
+  ipHash     String?
+  deviceHash String?
+  latitude   Decimal? @db.Decimal(9, 6)
+  longitude  Decimal? @db.Decimal(9, 6)
+
+  card          LoyaltyCard   @relation(fields: [cardId], references: [id])
+  user          User          @relation("StampOwner", fields: [userId], references: [id])
+  staff         User?         @relation("StampStaff", fields: [staffId], references: [id])
+  establishment Establishment @relation(fields: [establishmentId], references: [id])
+  stampPoint    StampPoint?   @relation(fields: [stampPointId], references: [id], onDelete: SetNull)
+
+  // REGLA CLAVE: un sello por día por cliente en cada establecimiento
+  @@unique([userId, establishmentId, stampDate])
+  @@index([establishmentId, stampDate])
+  @@index([cardId])
+}
+
+// ------------------------------------------------------------
+// ESTADÍSTICAS DE FIDELIDAD (desnormalizadas, para el panel)
+// ------------------------------------------------------------
+
+model CustomerStats {
+  id                   String          @id @default(uuid()) @db.Uuid
+  userId               String          @db.Uuid
+  establishmentId      String          @db.Uuid
+  totalStamps          Int             @default(0)
+  totalCardsCompleted  Int             @default(0)
+  totalRewardsRedeemed Int             @default(0)
+  firstStampDate       DateTime?       @db.Date
+  lastStampDate        DateTime?       @db.Date
+  visitsLast30d        Int             @default(0)
+  avgDaysBetweenVisits Decimal?        @db.Decimal(6, 2)
+  segment              CustomerSegment @default(NEW)
+  updatedAt            DateTime        @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id])
+  establishment Establishment @relation(fields: [establishmentId], references: [id])
+
+  @@unique([userId, establishmentId])
+  @@index([establishmentId, segment])
+  @@index([establishmentId, lastStampDate])
+}
+
+// ------------------------------------------------------------
+// AUDITORÍA
+// ------------------------------------------------------------
+
+model AuditLog {
+  id              String   @id @default(uuid()) @db.Uuid
+  actorId         String?  @db.Uuid
+  establishmentId String?  @db.Uuid
+  action          String // "stamp.void", "establishment.suspend", ...
+  entity          String
+  entityId        String?
+  metadata        Json?
+  ip              String?
+  createdAt       DateTime @default(now())
+
+  actor         User?          @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  establishment Establishment? @relation(fields: [establishmentId], references: [id], onDelete: SetNull)
+
+  @@index([establishmentId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+// ------------------------------------------------------------
+// MIGRACIÓN SQL MANUAL (Prisma no soporta índices parciales):
+//
+// CREATE UNIQUE INDEX "CardTemplate_one_active_per_establishment"
+//   ON "CardTemplate" ("establishmentId") WHERE "isActive" = true;
+//
+// CREATE UNIQUE INDEX "StampPoint_one_active_main_per_establishment"
+//   ON "StampPoint" ("establishmentId")
+//   WHERE "isActive" = true AND "memberId" IS NULL;
+// ------------------------------------------------------------

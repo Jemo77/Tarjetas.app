@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f5f2;
+  --foreground: #1c1917;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-brand-50: #fff8ed;
+  --color-brand-100: #ffefd4;
+  --color-brand-200: #ffdba8;
+  --color-brand-300: #ffc170;
+  --color-brand-400: #ff9d37;
+  --color-brand-500: #ff7f11;
+  --color-brand-600: #f06407;
+  --color-brand-700: #c74a08;
+  --color-brand-800: #9e3a0f;
+  --color-brand-900: #7f3210;
+  --color-ink-950: #1c1917;
+  --color-ink-900: #292524;
+  --color-ink-800: #44403c;
+  --color-ink-700: #57534e;
+  --color-ink-600: #78716c;
+  --color-ink-500: #a8a29e;
+  --color-ink-400: #d6d3d1;
+  --color-ink-300: #e7e5e4;
+  --color-ink-200: #f2f0ee;
+  --color-ink-100: #f7f5f3;
+  --color-ink-50: #fafaf9;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Animación del sello al sumarse */
+@keyframes stamp-pop {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.25); opacity: 1; }
+  100% { transform: scale(1); }
+}
+.animate-stamp-pop {
+  animation: stamp-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up {
+  animation: fade-up 0.4s ease-out both;
+}
+
+@keyframes confetti {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(80px) rotate(360deg); opacity: 0; }
+}
+.animate-confetti {
+  animation: confetti 1s ease-in both;
+}
+
+/* Scrollbar sutil */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-400) transparent;
+}
